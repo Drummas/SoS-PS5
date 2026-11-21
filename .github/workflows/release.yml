@@ -218,20 +218,8 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.plan.outputs.version }}
-        run: |
-          set -euo pipefail
-          # Only this version's section becomes the release body: its heading and everything after it, up to the
-          # next section heading. The changelog's own preamble follows the oldest section, so it is never included.
-          awk -v heading="## v$VERSION" '
-            index($0, heading) == 1 { capture = 1; print; next }
-            capture && /^## / { capture = 0 }
-            capture { print }
-          ' CHANGELOG.md > release-notes.md
-          if [ ! -s release-notes.md ]; then
-            echo "::error::CHANGELOG.md has no section for v$VERSION"
-            exit 1
-          fi
-          cat release-notes.md
+        # Only this version's section becomes the release body; the script is shared with the refresh job.
+        run: ./tools/release-notes.sh "$VERSION" release-notes.md
 
       - name: Create the release from the commit message
         id: auto-release
@@ -282,20 +270,8 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.plan.outputs.version }}
-        run: |
-          set -euo pipefail
-          # The same extraction the publish job uses: this version's heading and its body, up to the next
-          # section heading, and never the changelog preamble that sits after the oldest section.
-          awk -v heading="## v$VERSION" '
-            index($0, heading) == 1 { capture = 1; print; next }
-            capture && /^## / { capture = 0 }
-            capture { print }
-          ' CHANGELOG.md > release-notes.md
-          if [ ! -s release-notes.md ]; then
-            echo "::error::CHANGELOG.md has no section for v$VERSION"
-            exit 1
-          fi
-          cat release-notes.md
+        # Only this version's section becomes the release body; the script is shared with the publish job.
+        run: ./tools/release-notes.sh "$VERSION" release-notes.md
 
       - name: Rewrite the existing release
         shell: bash
