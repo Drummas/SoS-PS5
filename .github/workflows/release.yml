@@ -147,15 +147,17 @@ jobs:
           if cmake --build build --target libs relinker SonsOfSparta-PS5 2>&1 | tee build.log; then
             exit 0
           fi
-          # A failed build's log is only readable by repository admins, so the end of it is repeated as one
-          # annotation: those are public on a public repository and show which command failed and why.
+          # A failed build's log is only readable by repository admins, so the relevant lines are repeated as
+          # one annotation: those are public on a public repository and show which command failed and why.
+          grep -a -B2 -A6 -E 'error:|undefined reference|FAILED:|cannot find|ld\.exe:|collect2:|fatal error|CMake Error' build.log > errors.log || true
+          [ -s errors.log ] || tail -n 60 build.log > errors.log
           message=""
           while IFS= read -r line; do
             line=${line//'%'/'%25'}
             line=${line//$'\r'/}
             message+="${line:0:500}%0A"
-          done < <(tail -n 60 build.log)
-          echo "::error::Build failed. Last 60 log lines:%0A${message}"
+          done < errors.log
+          echo "::error::Build failed:%0A${message}"
           exit 1
 
       - name: Package the win64 download
