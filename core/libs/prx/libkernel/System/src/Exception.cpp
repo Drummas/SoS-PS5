@@ -188,6 +188,12 @@ void RunExceptionHandlerInline(int signum) {
     *reinterpret_cast<void**>(mcontext + 0xf8) = mcontext;
     handler(signum, mcontext);
 }
+
+// Umtx.cpp calls the two-argument form that Linux defines. Windows has no host ucontext to copy from,
+// and every Windows caller passes nullptr, so the zero-filled context above is the right one.
+void RunExceptionHandlerInline(int signum, const void*) {
+    RunExceptionHandlerInline(signum);
+}
 #endif
 
 // the shared signal number lives with the thread plumbing (Pthread.hpp)

@@ -18,3 +18,10 @@ version as the release notes.
   absolute ones, so the prepared tree survives a move together with the dump.
 - Releases are built and published by the `Release` workflow when a commit message reads
   `Release: X.Y.Z`.
+
+### Fixed
+
+- The Windows build links again: `libkernel` now provides the two-argument
+  `RunExceptionHandlerInline` that `Umtx.cpp` calls, as the Linux build already did.
+- The release workflow builds with the project's documented GCC 15.2 instead of the MSYS2
+  rolling compiler, and reports a failed build's error in a public check annotation.
