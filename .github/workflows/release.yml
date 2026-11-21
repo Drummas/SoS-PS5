@@ -113,11 +113,19 @@ jobs:
           $version = (& $gxx --version | Select-Object -First 1)
           Write-Output $version
           if ($version -notmatch '15\.2\.0') { throw "Expected GCC 15.2.0, got: $version" }
+          # Prove the toolchain works without winlibs on PATH: Configure must keep its own library path so that
+          # CMake's bundled curl keeps its certificate store when it downloads FFmpeg.
+          $test = Join-Path $env:RUNNER_TEMP "winlibs-check"
+          New-Item -ItemType Directory -Force $test | Out-Null
+          Set-Content -Path "$test\check.cpp" -Value "int main() { return 0; }"
+          & "$bin\g++.exe" "$test\check.cpp" -o "$test\check.exe"
+          if ($LASTEXITCODE -ne 0) { throw "winlibs g++ could not compile a test program" }
+          & "$test\check.exe"
+          if ($LASTEXITCODE -ne 0) { throw "winlibs test program failed to run" }
 
       - name: Configure
         shell: msys2 {0}
         run: |
-          export PATH="$WINLIBS_BIN_MSYS:$PATH"
           set -o pipefail
           if cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release 2>&1 | tee configure.log; then
             exit 0
