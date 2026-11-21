@@ -1,10 +1,5 @@
 # Changelog
 
-All notable changes to this project are documented here. Every release has its own
-section, headed by the version named in the release commit (for example
-`Release: 0.4.1`), because the release workflow uses the section that matches the
-version as the release notes.
-
 ## v0.4.2
 
 ### Changed
@@ -25,3 +20,11 @@ version as the release notes.
   `RunExceptionHandlerInline` that `Umtx.cpp` calls, as the Linux build already did.
 - The release workflow builds with the project's documented GCC 15.2 instead of the MSYS2
   rolling compiler, and reports a failed build's error in a public check annotation.
+
+## About this changelog
+
+All notable changes to this project are documented here. The newest release comes first: every
+release has its own section, headed by the version named in the release commit (for example
+`Release: 0.4.1`), and the release workflow publishes only the section that matches the version,
+from its heading up to the next one. This note therefore sits after the oldest section, where it
+is never part of any release's notes.
