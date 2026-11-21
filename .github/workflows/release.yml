@@ -1,7 +1,8 @@
 name: Release
 
 # A push whose commit message reads "Release: X.Y.Z" builds the win64 package and publishes it.
-# A manual run builds the same package; the "release" input decides whether it is published.
+# A manual run builds the same package; the "release" input decides whether it is published, and the
+# "refresh" input instead rewrites an existing release's notes from its changelog section, without building.
 on:
   push:
     branches: [main]
@@ -11,8 +12,12 @@ on:
         description: "Create a GitHub Release for this run"
         type: boolean
         default: false
+      refresh:
+        description: "Rewrite an existing release's notes from its changelog section (no build, no new tag)"
+        type: boolean
+        default: false
       version:
-        description: "Version to build, for example 0.4.1 (required when release is enabled)"
+        description: "Version to build or refresh, for example 0.4.2 (required when release or refresh is enabled)"
         type: string
         required: false
 
@@ -29,6 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release: ${{ steps.plan.outputs.release }}
+      refresh: ${{ steps.plan.outputs.refresh }}
       version: ${{ steps.plan.outputs.version }}
     steps:
       - name: Decide the version and whether to release
@@ -37,6 +43,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_INPUT: ${{ inputs.release }}
+          REFRESH_INPUT: ${{ inputs.refresh }}
           VERSION_INPUT: ${{ inputs.version }}
           COMMITS: ${{ toJSON(github.event.commits) }}
         run: |
@@ -45,10 +52,12 @@ jobs:
           # The same pattern the auto-release action is given below.
           pattern='^Release:[[:space:]]*v?([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?)$'
           release=false
+          refresh=false
           version=""
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             [ "${RELEASE_INPUT:-}" = "true" ] && release=true
+            [ "${REFRESH_INPUT:-}" = "true" ] && refresh=true
             version="${VERSION_INPUT:-}"
           else
             while IFS= read -r message; do
@@ -60,20 +69,25 @@ jobs:
             done < <(printf '%s' "${COMMITS:-}" | jq -r '.[]?.message // empty')
           fi
 
-          if [ "$release" = "true" ] && [ -z "$version" ]; then
+          if [ "$release" = "true" ] && [ "$refresh" = "true" ]; then
+            echo "::error::Enable either 'release' or 'refresh', not both: a refresh rewrites notes and must not publish."
+            exit 1
+          fi
+          if { [ "$release" = "true" ] || [ "$refresh" = "true" ]; } && [ -z "$version" ]; then
             echo "::error::No version found. Use a 'Release: X.Y.Z' commit message or set the version input."
             exit 1
           fi
           [ -n "$version" ] || version="0.0.0"
 
           echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "refresh=$refresh" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "release=$release version=$version"
+          echo "release=$release refresh=$refresh version=$version"
 
   build:
     name: Build the win64 package
     needs: plan
-    if: needs.plan.outputs.release == 'true' || github.event_name == 'workflow_dispatch'
+    if: needs.plan.outputs.refresh != 'true' && (needs.plan.outputs.release == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: windows-latest
     steps:
       - name: Check out the sources
@@ -247,3 +261,59 @@ jobs:
         env:
           VERSION: ${{ needs.plan.outputs.version }}
         run: gh release upload "v$VERSION" dist/*.zip --clobber
+
+  refresh:
+    name: Rewrite the release notes
+    needs: plan
+    if: needs.plan.outputs.refresh == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check out the sources
+        uses: actions/checkout@v4
+
+      - name: Check that gh is authenticated
+        run: gh auth status
+
+      - name: Prepare the release notes
+        shell: bash
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The same extraction the publish job uses: this version's heading and its body, up to the next
+          # section heading, and never the changelog preamble that sits after the oldest section.
+          awk -v heading="## v$VERSION" '
+            index($0, heading) == 1 { capture = 1; print; next }
+            capture && /^## / { capture = 0 }
+            capture { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::CHANGELOG.md has no section for v$VERSION"
+            exit 1
+          fi
+          cat release-notes.md
+
+      - name: Rewrite the existing release
+        shell: bash
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Editing the notes leaves the tag, title, and assets alone, and fails if the release does not exist.
+          gh release edit "v$VERSION" --notes-file release-notes.md
+          body="$(gh release view "v$VERSION" --json body -q .body)"
+          printf '%s\n' "$body"
+          case "$body" in
+            "## v$VERSION"*) ;;
+            *) echo "::error::The published body of v$VERSION does not start with its section heading"; exit 1 ;;
+          esac
+          case "$body" in
+            *"All notable changes to this project"*)
+              echo "::error::The published body of v$VERSION still contains the changelog preamble"
+              exit 1
+              ;;
+          esac
