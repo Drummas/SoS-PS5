@@ -436,18 +436,6 @@ long long FileSize(const std::wstring& path) {
     return (static_cast<long long>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
 }
 
-std::wstring FinalPath(const std::wstring& path) {
-    HANDLE handle = CreateFileW(path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
-    if (handle == INVALID_HANDLE_VALUE) return L"";
-    wchar_t buffer[2048];
-    const DWORD length = GetFinalPathNameByHandleW(handle, buffer, 2048, VOLUME_NAME_DOS);
-    CloseHandle(handle);
-    if (length == 0 || length >= 2048) return L"";
-    std::wstring result = buffer;
-    for (auto& character : result) character = static_cast<wchar_t>(towlower(character));
-    return result;
-}
-
 std::wstring PreparedStamp(const std::wstring& directory, const std::wstring& source) {
     return L"2 " + std::to_wstring(FileSize(source)) + L" " + std::to_wstring(FileSize(directory + L"\\tools\\relinker.exe"));
 }
@@ -720,6 +708,19 @@ void WriteLog(const std::wstring& path, const std::string& text) {
     fclose(file);
 }
 
+// Earlier launchers made app0\Media and app0\sce_sys junctions to the game's folders. They are no longer used,
+// because the same paths are served as aliases. Only a reparse point is removed, so a real folder is left alone.
+void RemoveOldLinks(const std::wstring& directory) {
+    for (const wchar_t* name : {L"Media", L"sce_sys"}) {
+        const std::wstring link = directory + L"\\app0\\" + name;
+        const DWORD attributes = GetFileAttributesW(link.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+            (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0)
+            continue;
+        RemoveDirectoryW(link.c_str());
+    }
+}
+
 bool PrepareIcons(const std::wstring& directory, const std::wstring& stamp) {
     const std::wstring stampFile = directory + L"\\prep\\controller_icons.stamp";
     const std::wstring output = directory + L"\\prep\\controller_icons_new.bundle";
@@ -741,18 +742,6 @@ bool PrepareIcons(const std::wstring& directory, const std::wstring& stamp) {
     }
     DeleteFileW(output.c_str());
     return done;
-}
-
-void LinkIntoApp0(const std::wstring& directory, const wchar_t* name) {
-    const std::wstring link = directory + L"\\app0\\" + name;
-    if (!Exists(directory + L"\\" + name)) return;
-    if (Exists(link)) {
-        if (FinalPath(link) == FinalPath(directory + L"\\" + name)) return;
-        RemoveDirectoryW(link.c_str());
-        if (Exists(link)) return;
-    }
-    CreateDirectoryW((directory + L"\\app0").c_str(), nullptr);
-    RunHidden(L"cmd.exe /c mklink /J \"" + link + L"\" \"" + directory + L"\\" + name + L"\"", directory, directory + L"\\logs\\link.log");
 }
 
 }
@@ -1356,6 +1345,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     }
 
     CreateDirectoryW((directory + L"\\logs").c_str(), nullptr);
+    RemoveOldLinks(directory);
 
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken = 0;
@@ -1448,8 +1438,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     }
     splash.Close();
 
-    for (const wchar_t* name : {L"Media", L"sce_sys"}) LinkIntoApp0(directory, name);
-
     for (int attempt = 1;; ++attempt) {
 
     SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
@@ -1487,9 +1475,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     SetEnvironmentVariableW(L"APS5_FPS_CAP", frameRateChoice == 1 ? L"120" : nullptr);
     SetEnvironmentVariableW(L"SOS_SHOW_IN_GAME_FPS", showInGameFps ? L"1" : nullptr);
     SetEnvironmentVariableW(L"SOS_CONTROLLER_BUTTON_ICONS", buttonIconsChoice != 0 ? kButtonIcons[buttonIconsChoice] : nullptr);
+    // The game opens /app0/Media and /app0/sce_sys. They are served as path aliases built from the folder this
+    // launcher runs from, so the installation contains no junctions with absolute targets and can be moved,
+    // copied or unpacked anywhere. The icon bundle alias is more specific and must be listed before Media.
     const std::wstring preparedIcons = IconsPrepared(directory);
-    const std::wstring iconsAlias = std::wstring(kIconsGuestPath) + L"|" + preparedIcons;
-    SetEnvironmentVariableW(L"SOS_PATH_ALIAS", Exists(preparedIcons) ? iconsAlias.c_str() : nullptr);
+    std::wstring aliases;
+    const auto addAlias = [&](const std::wstring& guest, const std::wstring& host) {
+        if (!aliases.empty()) aliases += L';';
+        aliases += guest + L'|' + host;
+    };
+    if (Exists(preparedIcons)) addAlias(kIconsGuestPath, preparedIcons);
+    addAlias(L"app0/Media", directory + L"\\Media");
+    addAlias(L"app0/sce_sys", directory + L"\\sce_sys");
+    SetEnvironmentVariableW(L"SOS_PATH_ALIAS", aliases.c_str());
     PROCESS_INFORMATION process{};
     std::wstring command = L"\"" + runtime + L"\"";
     if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, directory.c_str(), &startup, &process)) {

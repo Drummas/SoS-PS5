@@ -7,7 +7,7 @@ Made possible by the [AnyPS5](https://github.com/boykopovar/AnyPS5) project. The
 ![God of War: Sons of Sparta running on Windows at 60 FPS](screenshot.jpg)
 
 ## How to play
-1. Download `SonsOfSparta-PS5-Native-0.4.1-win64.zip` and extract it anywhere.
+1. Download `SonsOfSparta-PS5-Native-0.4.2-win64.zip` and extract it anywhere.
 2. Copy **your own** decrypted game files into the same folder as `SonsOfSparta-PS5.exe`:
    `eboot.bin` (or a decrypted `eboot.elf`), `sce_sys`, `sce_module` and `Media`.
 3. Double-click `SonsOfSparta-PS5.exe`, check the settings and press **Play**.
@@ -83,12 +83,12 @@ git clone --recursive https://github.com/OverkillLabs3/SoS-PS5.git
 cd SoS-PS5
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target libs relinker SonsOfSparta-PS5
-powershell -ExecutionPolicy Bypass -File tools\package.ps1 -Version 0.4.1
+powershell -ExecutionPolicy Bypass -File tools\package.ps1 -Version 0.4.2
 ```
 
 The first configure downloads prebuilt FFmpeg libraries from GitHub, so it needs internet access. The first build takes a while.
 
-The result is `release\SonsOfSparta-PS5-Native-0.4.1-win64`, the same layout as the download. Copy your own game files next to `SonsOfSparta-PS5.exe` as described above.
+The result is `release\SonsOfSparta-PS5-Native-0.4.2-win64`, the same layout as the download. Copy your own game files next to `SonsOfSparta-PS5.exe` as described above.
 
 ## Linux
 

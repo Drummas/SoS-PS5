@@ -18,7 +18,7 @@ namespace {
 
 struct PathAliases {
     std::mutex mutex;
-    std::vector<std::pair<std::string, std::string>> entries;
+    std::vector<std::pair<std::string, std::filesystem::path>> entries;
 };
 
 std::string TrimSlashes(const char* path) {
@@ -34,18 +34,58 @@ std::string TrimSlashes(const char* path) {
     return s.substr(start, end - start);
 }
 
-// SOS_PATH_ALIAS is "<guest path>|<host path>": one game file the launcher serves from its own prepared copy.
+void AddAlias(PathAliases& aliases, const std::string& guest, std::filesystem::path host) {
+    aliases.entries.emplace_back(TrimSlashes(guest.c_str()), std::move(host));
+}
+
+// SOS_PATH_ALIAS holds "<guest path>|<host path>" pairs separated by ';': game files the launcher serves
+// from its own prepared copy. The first matching prefix wins, so a more specific path must come first.
+#ifdef _WIN32
+// The installation folder may contain characters outside the ANSI code page, so the host path is read from
+// the wide environment. Only the guest prefix is narrowed, and it is plain ASCII by construction.
+void LoadAliases(PathAliases& aliases) {
+    const wchar_t* value = _wgetenv(L"SOS_PATH_ALIAS");
+    const std::wstring text = value != nullptr ? value : L"";
+    for (std::size_t start = 0; start < text.size();) {
+        const auto end = text.find(L';', start);
+        const std::wstring entry = text.substr(start, end - start);
+        const auto separator = entry.find(L'|');
+        if (separator != std::wstring::npos && separator > 0 && separator + 1 < entry.size()) {
+            std::string guest;
+            for (const wchar_t character : entry.substr(0, separator)) {
+                if (character > 0x7f) {
+                    guest.clear();
+                    break;
+                }
+                guest.push_back(static_cast<char>(character));
+            }
+            if (!guest.empty()) AddAlias(aliases, guest, std::filesystem::path(entry.substr(separator + 1)));
+        }
+        if (end == std::wstring::npos) break;
+        start = end + 1;
+    }
+}
+#else
+void LoadAliases(PathAliases& aliases) {
+    const char* value = std::getenv("SOS_PATH_ALIAS");
+    const std::string text = value != nullptr ? value : "";
+    for (std::size_t start = 0; start < text.size();) {
+        const auto end = text.find(';', start);
+        const std::string entry = text.substr(start, end - start);
+        const auto separator = entry.find('|');
+        if (separator != std::string::npos && separator > 0 && separator + 1 < entry.size()) {
+            AddAlias(aliases, entry.substr(0, separator), std::filesystem::path(entry.substr(separator + 1)));
+        }
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+}
+#endif
+
 PathAliases& Aliases() {
     static PathAliases aliases;
     static std::once_flag loaded;
-    std::call_once(loaded, [] {
-        const char* value = std::getenv("SOS_PATH_ALIAS");
-        const std::string text = value != nullptr ? value : "";
-        const auto separator = text.find('|');
-        if (separator != std::string::npos && separator > 0 && separator + 1 < text.size()) {
-            aliases.entries.emplace_back(TrimSlashes(text.substr(0, separator).c_str()), text.substr(separator + 1));
-        }
-    });
+    std::call_once(loaded, [] { LoadAliases(aliases); });
     return aliases;
 }
 
@@ -57,7 +97,7 @@ std::optional<std::filesystem::path> ResolveAlias(const std::string& guestPath) 
         if (relative.size() < prefix.size() || relative.compare(0, prefix.size(), prefix) != 0) continue;
         if (relative.size() == prefix.size()) return std::filesystem::path(host).make_preferred();
         if (relative[prefix.size()] != '/') continue;
-        std::filesystem::path result = std::filesystem::path(host) / std::filesystem::path(relative.substr(prefix.size() + 1));
+        std::filesystem::path result = host / std::filesystem::path(relative.substr(prefix.size() + 1));
         return result.make_preferred();
     }
     return std::nullopt;
@@ -113,11 +153,11 @@ extern "C" void AddPathAlias_nid_no_patch(const char* guestPrefix, const char* h
     const auto prefix = TrimSlashes(guestPrefix);
     for (auto& entry : aliases.entries) {
         if (entry.first == prefix) {
-            entry.second = hostPath;
+            entry.second = std::filesystem::path(hostPath);
             return;
         }
     }
-    aliases.entries.emplace_back(prefix, hostPath);
+    aliases.entries.emplace_back(prefix, std::filesystem::path(hostPath));
 }
 
 extern "C" void RemovePathAlias_nid_no_patch(const char* guestPrefix) {

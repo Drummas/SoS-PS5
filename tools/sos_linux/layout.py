@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 from pathlib import Path
 
@@ -77,6 +78,11 @@ def write_stamp(prep_dir: Path, value: str) -> None:
 
 
 def link_resources(dump: Path, prepared: Path) -> None:
+    """Link the game's resource folders into the prepared tree.
+
+    The target is relative to the link, so the installation keeps working when the
+    project folder (or the prepared tree together with the dump) is moved.
+    """
     app0 = prepared / "app0"
     app0.mkdir(parents=True, exist_ok=True)
     for name in RESOURCE_LINKS:
@@ -91,7 +97,7 @@ def link_resources(dump: Path, prepared: Path) -> None:
             link.unlink()
         elif link.exists():
             raise RuntimeError(f"E_LAYOUT: {link} exists and is not a symlink")
-        link.symlink_to(wanted)
+        link.symlink_to(os.path.relpath(wanted, link.parent))
 
 
 def copy_libs(build_dir: Path, prepared: Path) -> int:

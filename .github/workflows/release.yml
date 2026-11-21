@@ -1,0 +1,179 @@
+name: Release
+
+# A push whose commit message reads "Release: X.Y.Z" builds the win64 package and publishes it.
+# A manual run builds the same package; the "release" input decides whether it is published.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Create a GitHub Release for this run"
+        type: boolean
+        default: false
+      version:
+        description: "Version to build, for example 0.4.1 (required when release is enabled)"
+        type: string
+        required: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  plan:
+    name: Plan the release
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - name: Decide the version and whether to release
+        id: plan
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_INPUT: ${{ inputs.release }}
+          VERSION_INPUT: ${{ inputs.version }}
+          COMMITS: ${{ toJSON(github.event.commits) }}
+        run: |
+          set -euo pipefail
+          shopt -s nocasematch
+          # The same pattern the auto-release action is given below.
+          pattern='^Release:[[:space:]]*v?([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?)$'
+          release=false
+          version=""
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            [ "${RELEASE_INPUT:-}" = "true" ] && release=true
+            version="${VERSION_INPUT:-}"
+          else
+            while IFS= read -r message; do
+              if [[ "$message" =~ $pattern ]]; then
+                version="${BASH_REMATCH[1]}"
+                release=true
+                break
+              fi
+            done < <(printf '%s' "${COMMITS:-}" | jq -r '.[]?.message // empty')
+          fi
+
+          if [ "$release" = "true" ] && [ -z "$version" ]; then
+            echo "::error::No version found. Use a 'Release: X.Y.Z' commit message or set the version input."
+            exit 1
+          fi
+          [ -n "$version" ] || version="0.0.0"
+
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release=$release version=$version"
+
+  build:
+    name: Build the win64 package
+    needs: plan
+    if: needs.plan.outputs.release == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - name: Check out the sources
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install the MinGW-w64 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+
+      - name: Configure
+        shell: msys2 {0}
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: msys2 {0}
+        run: cmake --build build --target libs relinker SonsOfSparta-PS5
+
+      - name: Package the win64 download
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+          $version = "${{ needs.plan.outputs.version }}"
+          ./tools/package.ps1 -Version $version
+          $name = "SonsOfSparta-PS5-Native-$version-win64"
+          Compress-Archive -Path "release/$name" -DestinationPath "release/$name.zip" -Force
+
+      - name: Keep the package for the publish job
+        uses: actions/upload-artifact@v4
+        with:
+          name: SonsOfSparta-PS5-Native-win64
+          path: release/SonsOfSparta-PS5-Native-*-win64.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: [plan, build]
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      # GITHUB_TOKEN is the variable Auto Release reads, and the gh CLI authenticates with it too,
+      # so this single value covers every command in this job.
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check out the sources
+        uses: actions/checkout@v4
+
+      - name: Download the package
+        uses: actions/download-artifact@v4
+        with:
+          name: SonsOfSparta-PS5-Native-win64
+          path: dist
+
+      - name: Check that gh is authenticated
+        run: gh auth status
+
+      - name: Create the release from the commit message
+        id: auto-release
+        if: github.event_name == 'push'
+        uses: CupOfTea696/gh-action-auto-release@v1.0.2
+        with:
+          title: "SonsOfSparta-PS5-Native $version"
+          tag: "v$semver"
+          changelog: CHANGELOG.md
+          regex: '/^Release:\s*#{semver}$/i'
+
+      - name: Create the release for a manual run
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/notes.md"
+          awk -v heading="## v$VERSION" '
+            index($0, heading) == 1 { capture = 1; next }
+            capture && /^## / { capture = 0 }
+            capture { print }
+          ' CHANGELOG.md > "$notes"
+          if [ ! -s "$notes" ]; then
+            echo "::error::CHANGELOG.md has no section for v$VERSION"
+            exit 1
+          fi
+          gh release create "v$VERSION" \
+            --title "SonsOfSparta-PS5-Native $VERSION" \
+            --notes-file "$notes" \
+            --target "$GITHUB_SHA"
+
+      - name: Upload the win64 package
+        shell: bash
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: gh release upload "v$VERSION" dist/*.zip --clobber
