@@ -88,17 +88,42 @@ jobs:
           update: false
           install: >-
             git
-            mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
+          # The project is built with winlibs GCC 15.2 (see README); MSYS2's rolling GCC is newer and does
+          # not build these libraries, so the compiler is installed separately below.
+
+      - name: Install the project's GCC 15.2 toolchain
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $url = "https://github.com/brechtsanders/winlibs_mingw/releases/download/15.2.0posix-14.0.0-ucrt-r7/winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.zip"
+          $zip = "$env:RUNNER_TEMP\winlibs.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath "C:\winlibs" -Force
+          $gxx = Get-ChildItem "C:\winlibs" -Recurse -Filter g++.exe | Select-Object -First 1
+          if (-not $gxx) { throw "g++.exe was not found in the winlibs archive" }
+          $bin = $gxx.DirectoryName
+          "WINLIBS_BIN=$bin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+          # MSYS2 bash prepends its own directories to PATH, so the compiler's bin is put first in each step.
+          $msys = "/" + $bin.Substring(0, 1).ToLower() + $bin.Substring(2).Replace('\', '/')
+          "WINLIBS_BIN_MSYS=$msys" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+          "CC=$bin\gcc.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+          "CXX=$bin\g++.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+          $version = (& $gxx --version | Select-Object -First 1)
+          Write-Output $version
+          if ($version -notmatch '15\.2\.0') { throw "Expected GCC 15.2.0, got: $version" }
 
       - name: Configure
         shell: msys2 {0}
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: |
+          export PATH="$WINLIBS_BIN_MSYS:$PATH"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         shell: msys2 {0}
         run: |
+          export PATH="$WINLIBS_BIN_MSYS:$PATH"
           set -o pipefail
           if cmake --build build --target libs relinker SonsOfSparta-PS5 2>&1 | tee build.log; then
             exit 0
@@ -117,7 +142,7 @@ jobs:
       - name: Package the win64 download
         shell: pwsh
         run: |
-          $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+          $env:PATH = "$env:WINLIBS_BIN;$env:PATH"
           $version = "${{ needs.plan.outputs.version }}"
           ./tools/package.ps1 -Version $version
           $name = "SonsOfSparta-PS5-Native-$version-win64"
