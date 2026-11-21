@@ -118,7 +118,18 @@ jobs:
         shell: msys2 {0}
         run: |
           export PATH="$WINLIBS_BIN_MSYS:$PATH"
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          set -o pipefail
+          if cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release 2>&1 | tee configure.log; then
+            exit 0
+          fi
+          message=""
+          while IFS= read -r line; do
+            line=${line//'%'/'%25'}
+            line=${line//$'\r'/}
+            message+="${line:0:500}%0A"
+          done < <(tail -n 60 configure.log)
+          echo "::error::Configure failed. Last 60 log lines:%0A${message}"
+          exit 1
 
       - name: Build
         shell: msys2 {0}
